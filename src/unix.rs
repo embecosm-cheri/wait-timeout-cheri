@@ -24,12 +24,12 @@ use std::os::unix::net::UnixStream;
 use std::mem;
 use std::os::unix::prelude::*;
 use std::process::{Child, ExitStatus};
-use std::sync::{Once, ONCE_INIT, Mutex};
+use std::sync::{Once, Mutex};
 use std::time::{Duration, Instant};
 
 use libc::{self, c_int};
 
-static INIT: Once = ONCE_INIT;
+static INIT: Once = Once::new();
 static mut STATE: *mut State = 0 as *mut _;
 
 struct State {
@@ -79,7 +79,7 @@ impl State {
 
             // Register our sigchld handler
             let mut new: libc::sigaction = mem::zeroed();
-            new.sa_sigaction = sigchld_handler as usize;
+            new.sa_u.sa_sigaction = sigchld_handler;
 
             // FIXME: remove this workaround when the PR to libc get merged and released
             //
@@ -278,15 +278,12 @@ fn notify(mut file: &UnixStream) {
 extern fn sigchld_handler(signum: c_int,
                           info: *mut libc::siginfo_t,
                           ptr: *mut libc::c_void) {
-    type FnSigaction = extern fn(c_int, *mut libc::siginfo_t, *mut libc::c_void);
-    type FnHandler = extern fn(c_int);
-
     unsafe {
         let state = &*STATE;
         notify(&state.write);
 
-        let fnptr = state.prev.sa_sigaction;
-        if fnptr == 0 {
+        let id = state.prev.sa_u.sa_handler.sah_id;
+        if id == 0 {
             return
         }
         // FIXME: remove this workaround when the PR to libc get merged and released
@@ -295,10 +292,10 @@ extern fn sigchld_handler(signum: c_int,
         // constants for android. See https://github.com/rust-lang/libc/pull/511
         //
         if state.prev.sa_flags & _as!(libc::SA_SIGINFO, state.prev.sa_flags) == 0 {
-            let action = mem::transmute::<usize, FnHandler>(fnptr);
+            let action = state.prev.sa_u.sa_handler.sah_fn;
             action(signum)
         } else {
-            let action = mem::transmute::<usize, FnSigaction>(fnptr);
+            let action = state.prev.sa_u.sa_sigaction;
             action(signum, info, ptr)
         }
     }
